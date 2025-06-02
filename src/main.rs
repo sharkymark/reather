@@ -356,7 +356,8 @@ async fn async_main() -> Result<(), AppError> {
         println!("\nMain Menu:");
         println!("1. Enter a new street address");
         println!("2. Choose from stored addresses");
-        println!("3. Exit");
+        println!("3. Airport Search");
+        println!("4. Exit");
         print!("Please enter your choice: ");
         io::stdout().flush()?;
 
@@ -425,10 +426,13 @@ async fn async_main() -> Result<(), AppError> {
                 }
             }
             "3" => {
+                airport_search_menu().await?;
+            }
+            "4" => {
                 println!("Exiting Reather. Goodbye!");
                 break;
             }
-            _ => eprintln!("{}", AppError::UserInput("Invalid choice. Please enter 1, 2, or 3.".to_string())),
+            _ => eprintln!("{}", AppError::UserInput("Invalid choice. Please enter 1, 2, 3, or 4.".to_string())),
         }
     }
 
@@ -615,7 +619,7 @@ async fn show_address_submenu(address: String, lat: f64, lon: f64) -> Result<(),
                 }
             }
             "3" => {
-                display_external_links(&address, lat, lon, &station_id, &station_name, station_lat, station_lon);
+                display_external_links(&address, lat, lon, &station_id, &station_name, station_lat, station_lon).await;
             }
             "4" => {
                 println!("Returning to Main Menu...");
@@ -660,7 +664,7 @@ async fn fetch_and_display_local_forecast(forecast_url: &str, station_name: &str
     Ok(())
 }
 
-fn display_external_links(address_str: &str, addr_lat: f64, addr_lon: f64, station_id: &str, station_name: &str, station_lat: Option<f64>, station_lon: Option<f64>) {
+async fn display_external_links(address_str: &str, addr_lat: f64, addr_lon: f64, station_id: &str, station_name: &str, station_lat: Option<f64>, station_lon: Option<f64>) {
     println!("\n--- External Links (Maps, Flights, Real Estate) ---");
     
     // Address link
@@ -675,28 +679,41 @@ fn display_external_links(address_str: &str, addr_lat: f64, addr_lon: f64, stati
     if let (Some(s_lat), Some(s_lon)) = (station_lat, station_lon) {
         println!("\n");
         println!("Weather Station: {} ({})", station_name, if station_id.starts_with("UNKNOWN_STATION") {"ID N/A"} else {station_id});
-        println!("  Google Maps: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", s_lat, s_lon, s_lat, s_lon);
+        println!("  Google Maps: https://www.google.com/maps?q={},{}", s_lat, s_lon);
         if !station_id.starts_with("UNKNOWN_STATION") {
-            // If station_id is 4 letters, check both ICAO and IATA
+            // Try to find the best public airport code (IATA preferred, else ICAO, never internal codes)
+            let mut flightradar_code = String::new();
+            let mut airport_name = None;
+            // Try IATA via get_airport_code_from_station
             if let Some(iata) = airports::get_airport_code_from_station(station_id) {
-                println!("  This weather station is at a verified airport (IATA code: {}).", iata);
-                println!("  Flightradar24: {}", airports::generate_flightradar24_url(&iata));
-                if let Some(airport) = airports::get_airport_by_iata(&iata) {
+                if iata.len() == 3 && iata.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    flightradar_code = iata.clone();
+                    if let Some(airport) = airports::get_airport_by_iata(&iata) {
+                        airport_name = Some(airport.name.clone());
+                    }
+                }
+            }
+            // If not found, try ICAO
+            if flightradar_code.is_empty() && station_id.len() == 4 && station_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+                if let Some(airport) = airports::get_airport_by_icao(station_id) {
+                    let icao = airport.ident.trim();
+                    if icao.len() == 4 && icao.chars().all(|c| c.is_ascii_alphanumeric()) && !icao.starts_with("US-") && !icao.starts_with("MT") {
+                        flightradar_code = icao.to_string();
+                        airport_name = Some(airport.name.clone());
+                    }
+                }
+            }
+            if !flightradar_code.is_empty() {
+                println!("  This weather station is at a verified airport{}.", airport_name.as_ref().map(|n| format!(" ({} )", n)).unwrap_or_default());
+                println!("  Flightradar24: {}", airports::generate_flightradar24_url(&flightradar_code));
+                if let Some(airport) = airports::get_airport_by_iata(&flightradar_code) {
                     if !airport.home_link.trim().is_empty() {
                         println!("  Official Airport Website: {}", airport.home_link.trim());
                     }
                     if !airport.wikipedia_link.trim().is_empty() {
                         println!("  Wikipedia: {}", airport.wikipedia_link.trim());
                     }
-                }
-            } else if station_id.len() == 4 {
-                // Try direct ICAO match (ident field in Airport)
-                if let Some(airport) = airports::get_airport_by_icao(station_id) {
-                    let iata = &airport.iata_code;
-                    if !iata.is_empty() {
-                        println!("  This weather station is at a verified airport (IATA code: {}).", iata);
-                        println!("  Flightradar24: {}", airports::generate_flightradar24_url(iata));
-                    }
+                } else if let Some(airport) = airports::get_airport_by_icao(&flightradar_code) {
                     if !airport.home_link.trim().is_empty() {
                         println!("  Official Airport Website: {}", airport.home_link.trim());
                     }
@@ -812,4 +829,270 @@ async fn fetch_and_display_weather(station_id: &str, station_name: &str) -> Resu
         println!("Weather data properties are missing in the API response for station {}.", station_id);
     }
     Ok(())
+}
+
+async fn airport_search_menu() -> Result<(), AppError> {
+    use std::io::Write;
+    let us_states = [
+        "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
+    ];
+    let us_only;
+    let passenger_only;
+    // Ask user if they want US states only
+    loop {
+        println!("\n--- Airport Search ---");
+        println!("Do you want to search only US states? (Y/n): ");
+        io::stdout().flush()?;
+        let mut us_only_input = String::new();
+        io::stdin().read_line(&mut us_only_input)?;
+        let us_only_input = us_only_input.trim();
+        if us_only_input.is_empty() || us_only_input.eq_ignore_ascii_case("y") {
+            us_only = true;
+            break;
+        } else if us_only_input.eq_ignore_ascii_case("n") {
+            us_only = false;
+            break;
+        } else {
+            println!("Please enter Y for US states only, or N for all airports.");
+        }
+    }
+    // Ask user if they want passenger airports only
+    loop {
+        println!("Do you want to search only passenger airports (scheduled service)? (Y/n): ");
+        io::stdout().flush()?;
+        let mut passenger_only_input = String::new();
+        io::stdin().read_line(&mut passenger_only_input)?;
+        let passenger_only_input = passenger_only_input.trim();
+        if passenger_only_input.is_empty() || passenger_only_input.eq_ignore_ascii_case("y") {
+            passenger_only = true;
+            break;
+        } else if passenger_only_input.eq_ignore_ascii_case("n") {
+            passenger_only = false;
+            break;
+        } else {
+            println!("Please enter Y for passenger airports only, or N for all airports.");
+        }
+    }
+    loop {
+        println!("\n--- Airport Search ---");
+        println!("Search by airport code, state, municipality, or name. Partial matches are supported (e.g., 'DCA', 'HNL', 'Honolulu', 'Army').");
+        print!("Enter search term (or just press Enter to return to main menu): ");
+        io::stdout().flush()?;
+        let mut search = String::new();
+        io::stdin().read_line(&mut search)?;
+        let search = search.trim();
+        if search.is_empty() {
+            break;
+        }
+        let mut results = airports::search_airports(search);
+        if us_only {
+            results.retain(|a| {
+                let region = a.iso_region.trim();
+                region.starts_with("US-") && us_states.contains(&region[3..].to_uppercase().as_str())
+            });
+        }
+        if passenger_only {
+            results.retain(|a| a.scheduled_service == "yes");
+        }
+        if results.is_empty() {
+            println!("No airports found matching '{}'.", search);
+            continue;
+        }
+        'result_loop: loop {
+            println!("\nAirports found:");
+            for (i, airport) in results.iter().enumerate() {
+                println!("{}. {} ({}) - {}, {}", i + 1, airport.name, airport.ident, airport.municipality, airport.iso_region);
+            }
+            print!("\nSelect an airport by number, or type 's' to start search over, or 'm' to return to main menu: ");
+            io::stdout().flush()?;
+            let mut sel = String::new();
+            io::stdin().read_line(&mut sel)?;
+            let sel = sel.trim();
+            if sel.eq_ignore_ascii_case("s") {
+                break;
+            } else if sel.eq_ignore_ascii_case("m") {
+                return Ok(());
+            } else if let Ok(idx) = sel.parse::<usize>() {
+                if idx > 0 && idx <= results.len() {
+                    show_airport_details(&results[idx - 1]).await?;
+                    // After showing details, offer to select another, start over, or return
+                    loop {
+                        println!("\nOptions:");
+                        println!("1. Select another airport from the filtered list");
+                        println!("2. Start search over again");
+                        println!("3. Return to main menu");
+                        print!("Enter your choice: ");
+                        io::stdout().flush()?;
+                        let mut opt = String::new();
+                        io::stdin().read_line(&mut opt)?;
+                        match opt.trim() {
+                            "1" => continue 'result_loop, // re-show the list and prompt again
+                            "2" => break 'result_loop,    // start search over
+                            _ => return Ok(()), // return to main menu
+                        }
+                    }
+                } else {
+                    println!("Invalid selection.");
+                }
+            } else {
+                println!("Invalid input.");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn show_airport_details(airport: &airports::Airport) -> Result<(), AppError> {
+    println!("\nLatitude: {}, Longitude: {}", airport.latitude_deg, airport.longitude_deg);
+    println!("\nAirport Weather Conditions:");
+    println!("Station ID: {}", airport.ident);
+    println!("Labeled as: {}", airport.name);
+    println!("Station Name: {}", airport.municipality);
+    let lat = airport.latitude_deg.parse::<f64>().ok();
+    let lon = airport.longitude_deg.parse::<f64>().ok();
+    let mut temp = None;
+    let mut wind_speed = None;
+    let mut wind_dir = None;
+    let mut conditions = None;
+    let mut forecast = None;
+    let mut found_weather = false;
+    if let (Some(lat), Some(lon)) = (lat, lon) {
+        if let Ok(Some((station_id, station_name, _, _, forecast_url))) = find_nearest_station(lat, lon).await {
+            // Fetch current conditions
+            if let Ok(response) = HTTP_CLIENT.get(&format!("https://api.weather.gov/stations/{}/observations/latest", station_id)).send().await {
+                if let Ok(obs) = response.json::<WeatherObservationResponse>().await {
+                    if let Some(props) = obs.properties {
+                        temp = props.temperature.and_then(|t| t.value);
+                        wind_speed = props.wind_speed.and_then(|w| w.value);
+                        wind_dir = props.wind_direction.and_then(|w| w.value);
+                        conditions = props.text_description;
+                        found_weather = temp.is_some() || wind_speed.is_some() || wind_dir.is_some() || conditions.is_some();
+                    }
+                }
+            }
+            // Fetch forecast
+            if let Ok(response) = HTTP_CLIENT.get(&forecast_url).send().await {
+                if let Ok(forecast_data) = response.json::<ForecastResponse>().await {
+                    if let Some(first) = forecast_data.properties.periods.first() {
+                        forecast = Some(first.detailed_forecast.clone());
+                    }
+                }
+            }
+            println!("\nStation ID: {}", station_id);
+            println!("Labeled as: {}", airport.name);
+            println!("Station Name: {}", station_name);
+        }
+    }
+    if found_weather {
+        println!("Temperature: {}", temp.map(|t| format!("{:.1} °F", t * 9.0/5.0 + 32.0)).unwrap_or("None".to_string()));
+        println!("Wind Speed: {}", wind_speed.map(|w| format!("{:.1} mph", w * 2.23694)).unwrap_or("None".to_string()));
+        println!("Wind Direction: {}", wind_dir.map(|w| format!("{:.0}", w)).unwrap_or("None".to_string()));
+        if let Some(cond) = &conditions {
+            println!("Current Conditions: {}", cond);
+        }
+        if let Some(forecast) = &forecast {
+            println!("Forecast: {}", forecast);
+        }
+    } else {
+        println!("No weather data available for this airport (may be a military or remote field).\n");
+    }
+    if let (Some(lat), Some(lon)) = (lat, lon) {
+        println!("Google Maps: https://www.google.com/maps?q={},{}", lat, lon);
+        // Only show Flightradar24 if weather was found (i.e., likely a public airport)
+        if found_weather {
+            // Prefer IATA, then ICAO, then skip if neither is valid
+            let iata = airport.iata_code.trim();
+            let icao = airport.ident.trim();
+            let flightradar_code = if iata.len() == 3 && iata.chars().all(|c| c.is_ascii_alphanumeric()) {
+                iata
+            } else if icao.len() == 4 && icao.chars().all(|c| c.is_ascii_alphanumeric()) {
+                icao
+            } else {
+                ""
+            };
+            if !flightradar_code.is_empty() {
+                println!("Flightradar24: https://www.flightradar24.com/airport/{}", flightradar_code);
+            }
+        }
+        // Zillow links for US states only (always print after other output)
+        let us_states = [
+            "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
+        ];
+        let state_name_to_abbr = [
+            ("Alabama", "AL"), ("Alaska", "AK"), ("Arizona", "AZ"), ("Arkansas", "AR"), ("California", "CA"), ("Colorado", "CO"), ("Connecticut", "CT"), ("Delaware", "DE"), ("Florida", "FL"), ("Georgia", "GA"), ("Hawaii", "HI"), ("Idaho", "ID"), ("Illinois", "IL"), ("Indiana", "IN"), ("Iowa", "IA"), ("Kansas", "KS"), ("Kentucky", "KY"), ("Louisiana", "LA"), ("Maine", "ME"), ("Maryland", "MD"), ("Massachusetts", "MA"), ("Michigan", "MI"), ("Minnesota", "MN"), ("Mississippi", "MS"), ("Missouri", "MO"), ("Montana", "MT"), ("Nebraska", "NE"), ("Nevada", "NV"), ("New Hampshire", "NH"), ("New Jersey", "NJ"), ("New Mexico", "NM"), ("New York", "NY"), ("North Carolina", "NC"), ("North Dakota", "ND"), ("Ohio", "OH"), ("Oklahoma", "OK"), ("Oregon", "OR"), ("Pennsylvania", "PA"), ("Rhode Island", "RI"), ("South Carolina", "SC"), ("South Dakota", "SD"), ("Tennessee", "TN"), ("Texas", "TX"), ("Utah", "UT"), ("Vermont", "VT"), ("Virginia", "VA"), ("Washington", "WA"), ("West Virginia", "WV"), ("Wisconsin", "WI"), ("Wyoming", "WY")
+        ];
+        let mut zillow_printed = false;
+        // Await both lookups before printing
+        let county_state = get_county_state_from_latlon(lat, lon).await;
+        let city_state = get_city_state_from_latlon(lat, lon).await;
+        // Remove debug output for Zillow troubleshooting
+        if let Some(county_state) = county_state {
+            if let Some(state_abbr) = county_state.split('-').last() {
+                let state_abbr = state_abbr.trim();
+                let state_abbr = state_name_to_abbr.iter().find_map(|(name, abbr)| {
+                    if state_abbr.eq_ignore_ascii_case(name) { Some(*abbr) } else { None }
+                }).unwrap_or(state_abbr);
+                if us_states.contains(&state_abbr) {
+                    println!("Zillow (county): https://www.zillow.com/homes/for_sale/{}", county_state.replace(' ', "+"));
+                    zillow_printed = true;
+                }
+            }
+        }
+        if let Some(city_state) = city_state {
+            if let Some(state_abbr) = city_state.split('-').last() {
+                let state_abbr = state_abbr.trim();
+                let state_abbr = state_name_to_abbr.iter().find_map(|(name, abbr)| {
+                    if state_abbr.eq_ignore_ascii_case(name) { Some(*abbr) } else { None }
+                }).unwrap_or(state_abbr);
+                if us_states.contains(&state_abbr) {
+                    println!("Zillow (city): https://www.zillow.com/homes/for_sale/{}", city_state.replace(' ', "+"));
+                    zillow_printed = true;
+                }
+            }
+        }
+        if !zillow_printed {
+            println!("No Zillow links available for this location.");
+        }
+    }
+    Ok(())
+}
+
+use serde_json::Value;
+
+async fn get_county_state_from_latlon(lat: f64, lon: f64) -> Option<String> {
+    let url = format!("https://geo.fcc.gov/api/census/block/find?latitude={}&longitude={}&format=json", lat, lon);
+    match HTTP_CLIENT.get(&url).send().await {
+        Ok(resp) => {
+            if let Ok(json) = resp.json::<Value>().await {
+                let county = json.get("County").and_then(|c| c.get("name")).and_then(|v| v.as_str());
+                let state = json.get("State").and_then(|s| s.get("name")).and_then(|v| v.as_str());
+                if let (Some(county), Some(state)) = (county, state) {
+                    return Some(format!("{}-{}", county, state));
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    None
+}
+
+async fn get_city_state_from_latlon(lat: f64, lon: f64) -> Option<String> {
+    let url = format!("https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={}&lon={}", lat, lon);
+    match HTTP_CLIENT.get(&url)
+        .header("User-Agent", APP_USER_AGENT)
+        .send().await {
+        Ok(resp) => {
+            if let Ok(json) = resp.json::<Value>().await {
+                if let Some(addr) = json.get("address") {
+                    let city = addr.get("city").or_else(|| addr.get("town")).or_else(|| addr.get("village")).and_then(|v| v.as_str());
+                    let state = addr.get("state").and_then(|v| v.as_str());
+                    if let (Some(city), Some(state)) = (city, state) {
+                        return Some(format!("{}-{}", city, state));
+                    }
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    None
 }
