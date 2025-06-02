@@ -147,13 +147,29 @@ pub fn search_airports(pattern: &str) -> Vec<&'static Airport> {
     let mut seen = HashSet::new();
     let mut results = Vec::new();
     let pat = pattern.as_str();
+    let (wildcard_prefix, wildcard_suffix) = (pat.starts_with('*'), pat.ends_with('*'));
+    let pat = pat.trim_matches('*');
     for airport in airports.values() {
-        let code = airport.ident.to_lowercase();
-        let state = airport.iso_region.to_lowercase();
-        let muni = airport.municipality.to_lowercase();
-        let name = airport.name.to_lowercase();
-        let iata = airport.iata_code.to_lowercase();
-        if code.contains(pat) || iata.contains(pat) || state.contains(pat) || muni.contains(pat) || name.contains(pat) {
+        let fields = [
+            airport.ident.to_lowercase(),
+            airport.iata_code.to_lowercase(),
+            airport.iso_region.to_lowercase(),
+            airport.municipality.to_lowercase(),
+            airport.name.to_lowercase(),
+        ];
+        let mut matched = false;
+        for field in &fields {
+            matched = match (wildcard_prefix, wildcard_suffix) {
+                (true, true) => field.contains(pat), // *rome*
+                (true, false) => field.ends_with(pat), // *rome
+                (false, true) => field.starts_with(pat), // rome*
+                (false, false) => field == pat, // exact
+            };
+            if matched {
+                break;
+            }
+        }
+        if matched {
             // Avoid duplicates (airports can be in map by both ident and iata)
             if seen.insert(airport.ident.clone()) {
                 results.push(airport);

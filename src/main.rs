@@ -314,6 +314,61 @@ async fn async_main() -> Result<(), AppError> {
         exe_dir.join(ADDRESS_FILE)
     };
 
+    // --- NEW: Geocode addresses missing lat/lon in addresses.txt ---
+    if addresses_path.exists() {
+        let file = File::open(&addresses_path).map_err(|e| io_error_with_path(e, &addresses_path))?;
+        let reader = BufReader::new(file);
+        let mut lines: Vec<String> = Vec::new();
+        let mut changed = false;
+        for line in reader.lines() {
+            let line = line.map_err(|e| io_error_with_path(e, &addresses_path))?;
+            let parts: Vec<&str> = line.split(';').collect();
+            if parts.len() == 1 && !parts[0].trim().is_empty() {
+                // Only address, missing lat/lon
+                let addr = parts[0].trim();
+                match geocode_address(addr).await {
+                    Ok(Some((matched_address, lat, lon))) => {
+                        lines.push(format!("{};{};{}", matched_address.to_uppercase(), lat, lon));
+                        changed = true;
+                    }
+                    Ok(None) => {
+                        // Could not geocode, keep as is
+                        lines.push(line);
+                    }
+                    Err(e) => {
+                        eprintln!("Error geocoding address '{}': {}. Keeping as is.", addr, e);
+                        lines.push(line);
+                    }
+                }
+            } else if parts.len() == 3 {
+                // Replace address with uppercase matched address if possible
+                let addr = parts[0].trim();
+                match geocode_address(addr).await {
+                    Ok(Some((matched_address, lat, lon))) => {
+                        // Only update if lat/lon match what's in the file
+                        let lat_ok = format!("{:.8}", lat) == format!("{:.8}", parts[1].parse::<f64>().unwrap_or(lat));
+                        let lon_ok = format!("{:.8}", lon) == format!("{:.8}", parts[2].parse::<f64>().unwrap_or(lon));
+                        if lat_ok && lon_ok {
+                            lines.push(format!("{};{};{}", matched_address.to_uppercase(), lat, lon));
+                            changed = true;
+                        } else {
+                            lines.push(line);
+                        }
+                    }
+                    _ => lines.push(line),
+                }
+            } else {
+                lines.push(line);
+            }
+        }
+        if changed {
+            let mut file = OpenOptions::new().write(true).truncate(true).open(&addresses_path).map_err(|e| io_error_with_path(e, &addresses_path))?;
+            for l in &lines {
+                writeln!(file, "{}", l).map_err(|e| io_error_with_path(e, &addresses_path))?;
+            }
+        }
+    }
+
     if !addresses_path.exists() || addresses_path.metadata().map_err(|e| io_error_with_path(e, &addresses_path))?.len() == 0 {
         println!("\'{}\' is empty or does not exist.", addresses_path.display());
         println!("Would you like to populate it with seed addresses? (yes/no)");
@@ -875,7 +930,7 @@ async fn airport_search_menu() -> Result<(), AppError> {
     }
     loop {
         println!("\n--- Airport Search ---");
-        println!("Search by airport code, state, municipality, or name. Partial matches are supported (e.g., 'DCA', 'HNL', 'Honolulu', 'Army').");
+        println!("Search by airport code, state, municipality, or name. Use * as a wildcard: 'Rome*' for names starting with Rome, '*Rome' for names ending with Rome, '*Rome*' for names containing Rome, or 'Rome' for exact match.");
         print!("Enter search term (or just press Enter to return to main menu): ");
         io::stdout().flush()?;
         let mut search = String::new();
@@ -994,7 +1049,7 @@ async fn show_airport_details(airport: &airports::Airport) -> Result<(), AppErro
             println!("Forecast: {}", forecast);
         }
     } else {
-        println!("No weather data available for this airport (may be a military or remote field).\n");
+        println!("No weather data available for this airport (may be international, a military or remote field).\n");
     }
     if let (Some(lat), Some(lon)) = (lat, lon) {
         println!("Google Maps: https://www.google.com/maps?q={},{}", lat, lon);
