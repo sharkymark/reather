@@ -437,7 +437,8 @@ async fn async_main() -> Result<(), AppError> {
         println!("2. Choose from stored addresses");
         println!("3. Airport search");
         println!("4. Earthquakes");
-        println!("5. Exit");
+        println!("5. Tides");
+        println!("6. Exit");
         print!("Please enter your choice: ");
         io::stdout().flush()?;
 
@@ -512,10 +513,13 @@ async fn async_main() -> Result<(), AppError> {
                 earthquake_menu().await?;
             }
             "5" => {
+                tides_menu().await?;
+            }
+            "6" => {
                 println!("Exiting Reather. Goodbye!");
                 break;
             }
-            _ => eprintln!("{}", AppError::UserInput("Invalid choice. Please enter 1, 2, 3, 4, or 5.".to_string())),
+            _ => eprintln!("{}", AppError::UserInput("Invalid choice. Please enter 1, 2, 3, 4, 5, or 6.".to_string())),
         }
     }
 
@@ -1293,4 +1297,229 @@ fn format_utc_time(ms_since_epoch: i64) -> String {
     let dt = UNIX_EPOCH + Duration::from_millis(ms_since_epoch as u64);
     let datetime: DateTime<Utc> = DateTime::<Utc>::from(dt);
     datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
+// --- Tides menu and logic ---
+
+#[derive(Debug, Deserialize)]
+struct NWSNoaaTideStation {
+    id: String,
+    name: String,
+    state: String,
+    lat: f64,
+    lon: f64,
+}
+
+async fn tides_menu() -> Result<(), AppError> {
+    use std::io::Write;
+    println!("\n--- Tides ---");
+    println!("1. Lookup tides by address");
+    println!("2. Lookup tides by airport (US only)");
+    println!("3. Return to main menu");
+    print!("Enter your choice: ");
+    io::stdout().flush()?;
+    let mut choice = String::new();
+    io::stdin().read_line(&mut choice)?;
+    match choice.trim() {
+        "1" => tides_by_address().await?,
+        "2" => tides_by_airport().await?,
+        _ => return Ok(()),
+    }
+    Ok(())
+}
+
+async fn tides_by_address() -> Result<(), AppError> {
+    let addresses = load_addresses(Path::new(DATA_DIR).join(ADDRESS_FILE).as_path())?;
+    if addresses.is_empty() {
+        println!("No stored addresses found. Please add an address first.");
+        return Ok(());
+    }
+    println!("\nStored Addresses:");
+    for (i, (addr, _, _)) in addresses.iter().enumerate() {
+        println!("{}. {}", i + 1, addr);
+    }
+    println!("{}. Return to Tides Menu", addresses.len() + 1);
+    print!("Select an address number or return: ");
+    io::stdout().flush()?;
+    let mut selection_str = String::new();
+    io::stdin().read_line(&mut selection_str)?;
+    let n = match selection_str.trim().parse::<usize>() {
+        Ok(n) if n > 0 && n <= addresses.len() => n - 1,
+        _ => return Ok(()),
+    };
+    let (address, lat, lon) = &addresses[n];
+    println!("\nSelected address: {} (Lat: {}, Lon: {})", address, lat, lon);
+    let state = extract_state_from_address(address).unwrap_or_else(|| {
+        println!("Could not extract state from address. Defaulting to closest station by coordinates.");
+        "".to_string()
+    });
+    find_and_display_tide_station(*lat, *lon, Some(&state)).await
+}
+
+async fn tides_by_airport() -> Result<(), AppError> {
+    use std::io::Write;
+    println!("\n--- Airport Tides Lookup (US only) ---");
+    print!("Enter airport code, name, or city (wildcards supported): ");
+    io::stdout().flush()?;
+    let mut search = String::new();
+    io::stdin().read_line(&mut search)?;
+    let search = search.trim();
+    if search.is_empty() {
+        return Ok(());
+    }
+    let mut results = airports::search_airports(search);
+    let us_states = [
+        "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
+    ];
+    results.retain(|a| a.iso_region.starts_with("US-") && us_states.contains(&a.iso_region[3..].to_uppercase().as_str()));
+    if results.is_empty() {
+        println!("No US airports found matching '{}'.", search);
+        return Ok(());
+    }
+    for (i, airport) in results.iter().enumerate() {
+        println!("{}. {} ({}) - {}, {}", i + 1, airport.name, airport.ident, airport.municipality, airport.iso_region);
+    }
+    print!("Select an airport by number or return: ");
+    io::stdout().flush()?;
+    let mut sel = String::new();
+    io::stdin().read_line(&mut sel)?;
+    let idx = match sel.trim().parse::<usize>() {
+        Ok(idx) if idx > 0 && idx <= results.len() => idx - 1,
+        _ => return Ok(()),
+    };
+    let airport = &results[idx];
+    let lat = airport.latitude_deg.parse::<f64>().unwrap_or(0.0);
+    let lon = airport.longitude_deg.parse::<f64>().unwrap_or(0.0);
+    let state = extract_state_from_airport(airport).unwrap_or_else(|| {
+        println!("Could not extract state from airport. Defaulting to closest station by coordinates.");
+        "".to_string()
+    });
+    find_and_display_tide_station(lat, lon, Some(&state)).await
+}
+
+fn extract_state_from_address(address: &str) -> Option<String> {
+    // Try to extract state abbreviation from address (e.g., "PORTLAND, ME, 04109")
+    let parts: Vec<&str> = address.split(',').map(|s| s.trim()).collect();
+    for part in parts.iter().rev() {
+        if part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Some(part.to_uppercase());
+        }
+    }
+    None
+}
+
+fn extract_state_from_airport(airport: &airports::Airport) -> Option<String> {
+    // Try to extract state abbreviation from iso_region (e.g., "US-ME")
+    if airport.iso_region.starts_with("US-") && airport.iso_region.len() == 5 {
+        Some(airport.iso_region[3..].to_string())
+    } else {
+        None
+    }
+}
+
+async fn find_and_display_tide_station(lat: f64, lon: f64, state: Option<&str>) -> Result<(), AppError> {
+    // Fetch NOAA tide stations list (filter by state if possible)
+    let stations_url = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions&format=json".to_string();
+    let resp = HTTP_CLIENT.get(&stations_url).send().await.map_err(AppError::Network)?;
+    let json: serde_json::Value = resp.json().await.map_err(AppError::Network)?;
+    let mut stations = Vec::new();
+    if let Some(arr) = json["stations"].as_array() {
+        for s in arr {
+            let id = s["id"].as_str().unwrap_or("").to_string();
+            let name = s["name"].as_str().unwrap_or("").to_string();
+            let state_val = s["state"].as_str().unwrap_or("").to_string();
+            // NOAA returns lat/lon as floats, not strings, if available
+            let lat = s["lat"].as_f64().unwrap_or_else(|| s["lat"].as_str().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0));
+            let lon = s["lng"].as_f64().unwrap_or_else(|| s["lng"].as_str().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0));
+            stations.push(NWSNoaaTideStation { id, name, state: state_val, lat, lon });
+        }
+    }
+    if stations.is_empty() {
+        println!("No tide stations available from NOAA API.");
+        return Ok(());
+    }
+    // Filter by state if provided
+    let filtered: Vec<_> = if let Some(state) = state {
+        if !state.is_empty() {
+            let filtered: Vec<_> = stations.iter().filter(|s| s.state.eq_ignore_ascii_case(state)).collect();
+            if filtered.is_empty() {
+                println!("No tide stations found in state '{}', searching all stations...", state);
+                stations.iter().collect()
+            } else {
+                filtered
+            }
+        } else {
+            stations.iter().collect()
+        }
+    } else {
+        stations.iter().collect()
+    };
+    if filtered.is_empty() {
+        println!("No tide stations found (even after fallback). NOAA data may be incomplete.");
+        return Ok(());
+    }
+    // Find nearest station
+    let nearest = filtered.iter().min_by(|a, b| {
+        let da = haversine_distance(lat, lon, a.lat, a.lon);
+        let db = haversine_distance(lat, lon, b.lat, b.lon);
+        da.partial_cmp(&db).unwrap()
+    });
+    if let Some(station) = nearest {
+        println!("\nNearest NOAA Tide Station with predictions:");
+        println!("  {} ({})", station.name, station.id);
+        println!("  State: {}", station.state);
+        println!("  Location: {:.4}, {:.4}", station.lat, station.lon);
+        if station.lat != 0.0 && station.lon != 0.0 {
+            println!("  Station location: https://www.google.com/maps?q={},{}", station.lat, station.lon);
+        } else {
+            println!("  Google Maps: (Coordinates unavailable)");
+        }
+        // Always show Google Maps for the address/airport location
+        println!("  Reference location: https://www.google.com/maps?q={},{}", lat, lon);
+        // Fetch and display tide predictions (no need to show time zone info, NOAA returns local time)
+        fetch_and_display_tide_predictions(&station.id).await?;
+    } else {
+        println!("No tide station found.");
+    }
+    Ok(())
+}
+
+fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let r = 6371.0; // km
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians(); // Fixed: match Python logic
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    r * c
+}
+
+// Remove timezone logic, just print the time as returned by NOAA
+async fn fetch_and_display_tide_predictions(station_id: &str) -> Result<(), AppError> {
+    use chrono::{Utc};
+    let today = Utc::now().date_naive();
+    let tomorrow = today.succ_opt().unwrap();
+    for day in [today, tomorrow] {
+        let url = format!("https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=NOS.COOPS.TAC.WL&begin_date={}&end_date={}&datum=MLLW&station={}&time_zone=lst_ldt&units=english&interval=hilo&format=json", day.format("%Y%m%d"), day.format("%Y%m%d"), station_id);
+        let resp = HTTP_CLIENT.get(&url).send().await.map_err(AppError::Network)?;
+        let json: serde_json::Value = resp.json().await.map_err(AppError::Network)?;
+        println!("\nTide predictions for {} (local station time):", day);
+        if let Some(preds) = json["predictions"].as_array() {
+            for p in preds {
+                let t = p["t"].as_str().unwrap_or("");
+                let v = p["v"].as_str().unwrap_or("");
+                let typ = p["type"].as_str().unwrap_or("");
+                // Format time as am/pm
+                let t_ampm = if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M") {
+                    dt.format("%Y-%m-%d %I:%M %p").to_string()
+                } else {
+                    t.to_string()
+                };
+                println!("  {}: {} ft ({})", t_ampm, v, typ);
+            }
+        } else {
+            println!("  No predictions available.");
+        }
+    }
+    Ok(())
 }
