@@ -13,3 +13,4 @@ tokio = { version = "1", features = ["full"] }
 urlencoding = "2.1.0"
 lazy_static = "1.4.0"
 csv = "1.2"
+chrono = { version = "0.4", features = ["serde"] }
