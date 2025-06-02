@@ -1,5 +1,9 @@
 /target
 /data/*
 !/data/.gitkeep
-!/data/seed.txt
 !/.vscode/*
+!/target/
+/target/*
+!/target/release/
+/target/release/*
+!/target/release/reather
