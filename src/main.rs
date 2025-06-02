@@ -1,16 +1,27 @@
 use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fmt;
+use std::env;
 
 #[macro_use]
 extern crate lazy_static;
 
 const DATA_DIR: &str = "data";
-const SEED_FILE: &str = "seed.txt";
 const ADDRESS_FILE: &str = "addresses.txt";
 const APP_USER_AGENT: &str = "reather-app/0.1 (rust-cli-weather-app; https://github.com/yourusername/reather)"; // Replace with actual repo URL if available
+
+// Hardcoded seed addresses from data/seed.txt
+const SEED_ADDRESSES: [&str; 7] = [
+    "233 E MAIN ST, BOZEMAN, MT, 59715",
+    "1 MANELE RD, LANAI CITY, HI, 96763",
+    "52 WHITEHEAD AVE, PORTLAND, ME, 04109",
+    "22338 PACIFIC COAST HWY, MALIBU, CA, 90265",
+    "58 OCEAN ST, ROCKLAND, ME, 04841",
+    "100 SANKATY RD, NANTUCKET, MA, 02554",
+    "1600 PENNSYLVANIA AVE NW, WASHINGTON, DC, 20500",
+];
 
 lazy_static! {
     static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::builder()
@@ -272,65 +283,59 @@ async fn geocode_address(
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    // Ensure data directory exists
-    std::fs::create_dir_all(DATA_DIR).map_err(|e| io_error_with_path(e, Path::new(DATA_DIR)))?;
+    // Get the executable directory as a fallback location
+    let exe_dir = env::current_exe()
+        .map(|path| path.parent().map(|p| p.to_path_buf()))
+        .unwrap_or(None)
+        .unwrap_or_else(|| PathBuf::from("."));
+    
+    // Check if the data directory exists
+    let data_dir_path = PathBuf::from(DATA_DIR);
+    
+    // Decide which directory to use for addresses.txt
+    // Use data directory if it exists, otherwise use executable directory
+    let addresses_path = if data_dir_path.exists() {
+        data_dir_path.join(ADDRESS_FILE)
+    } else {
+        // Do NOT create the data directory, just use the executable directory
+        exe_dir.join(ADDRESS_FILE)
+    };
 
-    let addresses_path_str = format!("{}/{}", DATA_DIR, ADDRESS_FILE);
-    let addresses_path = Path::new(&addresses_path_str);
-
-    if !addresses_path.exists() || addresses_path.metadata().map_err(|e| io_error_with_path(e, addresses_path))?.len() == 0 {
+    if !addresses_path.exists() || addresses_path.metadata().map_err(|e| io_error_with_path(e, &addresses_path))?.len() == 0 {
         println!("\'{}\' is empty or does not exist.", addresses_path.display());
-        println!(
-            "Would you like to populate it with seed addresses from \'{}\'? (yes/no)",
-            Path::new(DATA_DIR).join(SEED_FILE).display()
-        );
+        println!("Would you like to populate it with seed addresses? (yes/no)");
+        
         let mut user_input = String::new();
         io::stdin().read_line(&mut user_input)?;
         if user_input.trim().eq_ignore_ascii_case("yes") {
-            let seed_path_str = format!("{}/{}", DATA_DIR, SEED_FILE);
-            let seed_path = Path::new(&seed_path_str);
-            if seed_path.exists() {
-                println!("Processing seed addresses from \'{}\'...", seed_path.display());
-                let file = File::open(seed_path).map_err(|e| io_error_with_path(e, seed_path))?;
-                let reader = BufReader::new(file);
-                let mut addresses_file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(addresses_path)
-                    .map_err(|e| io_error_with_path(e, addresses_path))?;
+            println!("Processing seed addresses...");
+            let mut addresses_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&addresses_path)
+                .map_err(|e| io_error_with_path(e, &addresses_path))?;
 
-                for line_result in reader.lines() {
-                    let address_to_geocode = line_result.map_err(|e| io_error_with_path(e, seed_path))?;
-                    if address_to_geocode.trim().is_empty() {
-                        continue;
+            for address_to_geocode in SEED_ADDRESSES.iter() {
+                println!("Geocoding seed address: {}", address_to_geocode);
+                match geocode_address(address_to_geocode).await {
+                    Ok(Some((matched_address, lat, lon))) => {
+                        writeln!(addresses_file, "{};{};{}", matched_address, lat, lon)
+                            .map_err(|e| io_error_with_path(e, &addresses_path))?;
+                        println!("  Stored: {};{};{}", matched_address, lat, lon);
                     }
-                    println!("Geocoding seed address: {}", address_to_geocode);
-                    match geocode_address(&address_to_geocode).await {
-                        Ok(Some((matched_address, lat, lon))) => {
-                            writeln!(addresses_file, "{};{};{}", matched_address, lat, lon)
-                                .map_err(|e| io_error_with_path(e, addresses_path))?;
-                            println!("  Stored: {};{};{}", matched_address, lat, lon);
-                        }
-                        Ok(None) => {
-                            eprintln!("{}", AppError::Api(format!("Could not geocode seed address: '{}'. Skipping.", address_to_geocode)));
-                        }
-                        Err(e) => {
-                            eprintln!("  Error geocoding seed address \'{}\': {}. Skipping.", address_to_geocode, e);
-                        }
+                    Ok(None) => {
+                        eprintln!("{}", AppError::Api(format!("Could not geocode seed address: '{}'. Skipping.", address_to_geocode)));
+                    }
+                    Err(e) => {
+                        eprintln!("  Error geocoding seed address \'{}\': {}. Skipping.", address_to_geocode, e);
                     }
                 }
-                println!("Seed addresses processed and stored in \'{}\'.", addresses_path.display());
-            } else {
-                println!(
-                    "Warning: Seed file \'{}\' not found. No seed addresses to copy.",
-                    seed_path.display()
-                );
-                File::create(addresses_path).map_err(|e| io_error_with_path(e, addresses_path))?; // Create empty addresses.txt
             }
+            println!("Seed addresses processed and stored in \'{}\'.", addresses_path.display());
         } else {
             println!("Skipping seed address population. You can add addresses manually.");
-            File::create(addresses_path).map_err(|e| io_error_with_path(e, addresses_path))?; // Create empty addresses.txt
+            File::create(&addresses_path).map_err(|e| io_error_with_path(e, &addresses_path))?; // Create empty addresses.txt
         }
     }
 
@@ -355,7 +360,7 @@ async fn main() -> Result<(), AppError> {
                 if !new_address_query.is_empty() {
                     match geocode_address(new_address_query).await {
                         Ok(Some((matched_address, lat, lon))) => {
-                            add_address_to_file(&matched_address, lat, lon, addresses_path)?;
+                            add_address_to_file(&matched_address, lat, lon, &addresses_path)?;
                             println!("Address geocoded and added: {} (Lat: {}, Lon: {})", matched_address, lat, lon);
                             if let Err(e) = show_address_submenu(matched_address, lat, lon).await {
                                 eprintln!("Error in address submenu: {}", e);
@@ -373,7 +378,7 @@ async fn main() -> Result<(), AppError> {
                 }
             }
             "2" => {
-                let stored_data = load_addresses(addresses_path)?;
+                let stored_data = load_addresses(&addresses_path)?;
                 if stored_data.is_empty() {
                     println!("No stored addresses found. Please add an address first (Option 1).");
                     continue;
