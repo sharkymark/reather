@@ -10,6 +10,34 @@ This is a Rust application that allows users to get weather information for US a
 * Local forecast summary with detailed information
 * Google Maps links for both addresses and weather stations
 * No API keys required
+* Portable design - works anywhere without installation requirements
+
+## Usage
+
+1. **First Run**: 
+   - When first run, you'll be prompted to populate with seed addresses
+   - Answer 'yes' to add example addresses or 'no' to start with an empty list
+
+2. **Main Menu**:
+   - Add a new address
+   - Choose an existing address for weather information
+   - Delete addresses from your saved list
+   - Exit the application
+
+3. **Weather Information**:
+   - View current conditions from the nearest weather station
+   - See detailed forecast information
+   - Access Google Maps links for visualization
+
+## Portability
+
+Reather is designed to be portable and can run from any location:
+
+* **No data directory required**: The application can run without needing a `data` directory to be present
+* **Adaptive storage**: 
+  - If run from the project directory with a `data` folder, it will use `data/addresses.txt`
+  - If run from any other location, it creates and uses `addresses.txt` in the same directory as the executable
+* **Built-in seed addresses**: Seed addresses are hardcoded into the application for ease of use
 
 ## Development Container
 
