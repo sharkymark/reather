@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::fmt;
 use std::env;
 
+mod airports;
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -281,8 +283,19 @@ async fn geocode_address(
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), AppError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    airports::init_airports()?;
+    let airport_count = airports::get_airport_count();
+    println!("Reather - a Rust-based Weather App");
+    println!("USA airport database loaded: {} airports", airport_count);
+    println!("");
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())?)
+}
+
+async fn async_main() -> Result<(), AppError> {
     // Get the executable directory as a fallback location
     let exe_dir = env::current_exe()
         .map(|path| path.parent().map(|p| p.to_path_buf()))
@@ -655,20 +668,42 @@ fn display_external_links(address_str: &str, addr_lat: f64, addr_lon: f64, stati
     println!("  Google Maps: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", addr_lat, addr_lon, addr_lat, addr_lon);
     
     // Extract ZIP code and add Zillow link if available
-    if let Some(zip_code) = extract_zip_code(address_str) {
-        println!("  Zillow: {}", generate_zillow_url(&zip_code));
+    if let Some(zip_code) = airports::extract_zip_code(address_str) {
+        println!("  Zillow: {}", airports::generate_zillow_url(&zip_code));
     }
 
     if let (Some(s_lat), Some(s_lon)) = (station_lat, station_lon) {
         println!("\n");
         println!("Weather Station: {} ({})", station_name, if station_id.starts_with("UNKNOWN_STATION") {"ID N/A"} else {station_id});
         println!("  Google Maps: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", s_lat, s_lon, s_lat, s_lon);
-        
-        // Check if the station is at an airport and add Flightradar24 link if it is
         if !station_id.starts_with("UNKNOWN_STATION") {
-            if let Some(airport_code) = get_airport_info(station_id) {
-                println!("  This weather station is at an airport.");
-                println!("  Flightradar24: {}", generate_flightradar24_url(&airport_code));
+            // If station_id is 4 letters, check both ICAO and IATA
+            if let Some(iata) = airports::get_airport_code_from_station(station_id) {
+                println!("  This weather station is at a verified airport (IATA code: {}).", iata);
+                println!("  Flightradar24: {}", airports::generate_flightradar24_url(&iata));
+                if let Some(airport) = airports::get_airport_by_iata(&iata) {
+                    if !airport.home_link.trim().is_empty() {
+                        println!("  Official Airport Website: {}", airport.home_link.trim());
+                    }
+                    if !airport.wikipedia_link.trim().is_empty() {
+                        println!("  Wikipedia: {}", airport.wikipedia_link.trim());
+                    }
+                }
+            } else if station_id.len() == 4 {
+                // Try direct ICAO match (ident field in Airport)
+                if let Some(airport) = airports::get_airport_by_icao(station_id) {
+                    let iata = &airport.iata_code;
+                    if !iata.is_empty() {
+                        println!("  This weather station is at a verified airport (IATA code: {}).", iata);
+                        println!("  Flightradar24: {}", airports::generate_flightradar24_url(iata));
+                    }
+                    if !airport.home_link.trim().is_empty() {
+                        println!("  Official Airport Website: {}", airport.home_link.trim());
+                    }
+                    if !airport.wikipedia_link.trim().is_empty() {
+                        println!("  Wikipedia: {}", airport.wikipedia_link.trim());
+                    }
+                }
             }
         }
     } else {
@@ -777,48 +812,4 @@ async fn fetch_and_display_weather(station_id: &str, station_name: &str) -> Resu
         println!("Weather data properties are missing in the API response for station {}.", station_id);
     }
     Ok(())
-}
-
-// Extracts the zip code from a US address string.
-// Expects format like "123 MAIN ST, CITY, STATE, 12345" or similar.
-fn extract_zip_code(address_str: &str) -> Option<String> {
-    // Look for 5-digit zip code at the end of the address
-    let parts: Vec<&str> = address_str.split(',').collect();
-    if let Some(last_part) = parts.last() {
-        // Try to find a 5-digit sequence in the last part (usually STATE, ZIP)
-        let trimmed = last_part.trim();
-        let words: Vec<&str> = trimmed.split_whitespace().collect();
-        if let Some(last_word) = words.last() {
-            // Check if it's a 5-digit number (US ZIP code)
-            if last_word.len() == 5 && last_word.chars().all(|c| c.is_digit(10)) {
-                return Some(last_word.to_string());
-            }
-        }
-    }
-    None
-}
-
-// Determines if a weather station is at an airport and returns its airport code
-fn get_airport_info(station_id: &str) -> Option<String> {
-    // Most US airport weather stations have IDs starting with K followed by the 3-letter IATA code
-    // Example: KBOS for Boston Logan International Airport
-    if station_id.len() == 4 && station_id.starts_with('K') {
-        let iata_code = &station_id[1..4];
-        return Some(iata_code.to_string());
-    }
-    
-    // Some stations at smaller airports might follow other patterns
-    // Future enhancement: Add more pattern matching or a lookup table
-    
-    None
-}
-
-// Generates a Flightradar24 URL for the given airport code
-fn generate_flightradar24_url(airport_code: &str) -> String {
-    format!("https://www.flightradar24.com/airport/{}", airport_code)
-}
-
-// Generates a Zillow URL for the given ZIP code
-fn generate_zillow_url(zip_code: &str) -> String {
-    format!("https://www.zillow.com/homes/for_sale/{}", zip_code)
 }
