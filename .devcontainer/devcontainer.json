@@ -1,0 +1,37 @@
+{
+  "name": "Rust-based weather app",
+  "dockerFile": "Dockerfile",
+  "context": ".",
+  "mounts": [
+  ],  
+  "containerEnv": {
+  },
+  "remoteUser": "coder",
+  "build": {
+    "args": {
+      "USERNAME": "coder",
+      "USER_UID": "1000",
+      "USER_GID": "1000"
+    }
+  },
+  "customizations": {
+    "vscode": {
+        "extensions": [
+            "rust-lang.rust-analyzer",
+            "vadimcn.vscode-lldb",
+            "github.copilot"
+        ],
+        "rust-analyzer.checkOnSave.command": "clippy"
+    }
+},
+"remoteEnv": {
+  "RUST_BACKTRACE": "full"
+},
+"runArgs": [
+],
+
+  "postCreateCommand": "chmod +x .devcontainer/init-rust.sh && .devcontainer/init-rust.sh && echo 'Reather container created successfully!'",
+  "postStartCommand": "echo 'Reather container started successfully! Launching the Reather app...' && cargo run --release"
+
+}
+
