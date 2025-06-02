@@ -578,7 +578,7 @@ async fn show_address_submenu(address: String, lat: f64, lon: f64) -> Result<(),
         println!("\n--- Submenu for {} ---", address);
         println!("1. Get Current Conditions");
         println!("2. Get Local Forecast");
-        println!("3. Google Map Links");
+        println!("3. External Links (Maps, Flights, Real Estate)");
         println!("4. Return to Main Menu");
         print!("Please enter your choice: ");
         io::stdout().flush()?;
@@ -602,7 +602,7 @@ async fn show_address_submenu(address: String, lat: f64, lon: f64) -> Result<(),
                 }
             }
             "3" => {
-                display_google_maps_links(&address, lat, lon, &station_id, &station_name, station_lat, station_lon);
+                display_external_links(&address, lat, lon, &station_id, &station_name, station_lat, station_lon);
             }
             "4" => {
                 println!("Returning to Main Menu...");
@@ -647,34 +647,33 @@ async fn fetch_and_display_local_forecast(forecast_url: &str, station_name: &str
     Ok(())
 }
 
-fn display_google_maps_links(address_str: &str, addr_lat: f64, addr_lon: f64, station_id: &str, station_name: &str, station_lat: Option<f64>, station_lon: Option<f64>) {
-    println!("\n--- Google Maps Links ---");
+fn display_external_links(address_str: &str, addr_lat: f64, addr_lon: f64, station_id: &str, station_name: &str, station_lat: Option<f64>, station_lon: Option<f64>) {
+    println!("\n--- External Links (Maps, Flights, Real Estate) ---");
     
     // Address link
-    // Google Maps URL format for satellite view with zoom: https://www.google.com/maps/@?api=1&map_action=map&center=LAT,LON&zoom=ZOOM&basemap=satellite
-    // A simpler q= approach also works well for search and often defaults to a good view.
-    // Using q= for simplicity and better handling of address strings by Google.
-    // For satellite and zoom, the @lat,lon,zoomz syntax is more direct.
-    // Example: https://www.google.com/maps/@34.0522,-118.2437,15z/data=!3m1!1e3 (for satellite)
-    // Simpler for search: https://www.google.com/maps/search/?api=1&query=LAT,LON
-    // For satellite view directly: https://www.google.com/maps/place/ADDRESS/@LAT,LON,500m/data=!3m1!1e3 (500m is approx zoom level)
-    // Let's use the @lat,lon,zoomz/data=!3m1!1e3 format for direct satellite view and zoom.
-    // The zoom level for Google Maps URLs is a bit different from a simple integer like '5'. 
-    // A 'z' value like 15z is common. Let's try a fixed value that gives a moderate zoom.
-    // Or, we can use a simpler query that might not force satellite but is easier to construct.
-    // Let's try: https://www.google.com/maps?q=LAT,LON&ll=LAT,LON&z=15&t=k (t=k for satellite)
-    // The zoom level '5' is very zoomed out. Let's use 15 for a moderate street/area view.
-
     println!("Address: {}", address_str);
-    println!("  Link: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", addr_lat, addr_lon, addr_lat, addr_lon);
+    println!("  Google Maps: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", addr_lat, addr_lon, addr_lat, addr_lon);
+    
+    // Extract ZIP code and add Zillow link if available
+    if let Some(zip_code) = extract_zip_code(address_str) {
+        println!("  Zillow: {}", generate_zillow_url(&zip_code));
+    }
 
     if let (Some(s_lat), Some(s_lon)) = (station_lat, station_lon) {
+        println!("\n");
         println!("Weather Station: {} ({})", station_name, if station_id.starts_with("UNKNOWN_STATION") {"ID N/A"} else {station_id});
-        println!("  Link: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", s_lat, s_lon, s_lat, s_lon);
+        println!("  Google Maps: https://www.google.com/maps?q={},{}&ll={},{}&z=17&t=k", s_lat, s_lon, s_lat, s_lon);
+        
+        // Check if the station is at an airport and add Flightradar24 link if it is
+        if !station_id.starts_with("UNKNOWN_STATION") {
+            if let Some(airport_code) = get_airport_info(station_id) {
+                println!("  This weather station is at an airport.");
+                println!("  Flightradar24: {}", generate_flightradar24_url(&airport_code));
+            }
+        }
     } else {
         println!("Weather Station: {} ({}) (Coordinates not available for map link)", station_name, if station_id.starts_with("UNKNOWN_STATION") {"ID N/A"} else {station_id});
     }
-
 }
 
 async fn fetch_and_display_weather(station_id: &str, station_name: &str) -> Result<(), AppError> {
@@ -778,4 +777,48 @@ async fn fetch_and_display_weather(station_id: &str, station_name: &str) -> Resu
         println!("Weather data properties are missing in the API response for station {}.", station_id);
     }
     Ok(())
+}
+
+// Extracts the zip code from a US address string.
+// Expects format like "123 MAIN ST, CITY, STATE, 12345" or similar.
+fn extract_zip_code(address_str: &str) -> Option<String> {
+    // Look for 5-digit zip code at the end of the address
+    let parts: Vec<&str> = address_str.split(',').collect();
+    if let Some(last_part) = parts.last() {
+        // Try to find a 5-digit sequence in the last part (usually STATE, ZIP)
+        let trimmed = last_part.trim();
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        if let Some(last_word) = words.last() {
+            // Check if it's a 5-digit number (US ZIP code)
+            if last_word.len() == 5 && last_word.chars().all(|c| c.is_digit(10)) {
+                return Some(last_word.to_string());
+            }
+        }
+    }
+    None
+}
+
+// Determines if a weather station is at an airport and returns its airport code
+fn get_airport_info(station_id: &str) -> Option<String> {
+    // Most US airport weather stations have IDs starting with K followed by the 3-letter IATA code
+    // Example: KBOS for Boston Logan International Airport
+    if station_id.len() == 4 && station_id.starts_with('K') {
+        let iata_code = &station_id[1..4];
+        return Some(iata_code.to_string());
+    }
+    
+    // Some stations at smaller airports might follow other patterns
+    // Future enhancement: Add more pattern matching or a lookup table
+    
+    None
+}
+
+// Generates a Flightradar24 URL for the given airport code
+fn generate_flightradar24_url(airport_code: &str) -> String {
+    format!("https://www.flightradar24.com/airport/{}", airport_code)
+}
+
+// Generates a Zillow URL for the given ZIP code
+fn generate_zillow_url(zip_code: &str) -> String {
+    format!("https://www.zillow.com/homes/for_sale/{}", zip_code)
 }

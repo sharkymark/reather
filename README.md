@@ -8,7 +8,10 @@ This is a Rust application that allows users to get weather information for US a
 * Stores and manages your frequently used addresses
 * Current weather conditions from nearest NOAA weather station
 * Local forecast summary with detailed information
-* Google Maps links for both addresses and weather stations
+* External links including:
+  * Google Maps for both addresses and weather stations
+  * Flightradar24 for weather stations at airports
+  * Zillow real estate listings based on ZIP code
 * No API keys required
 * Portable design - works anywhere without installation requirements
 
@@ -27,7 +30,7 @@ This is a Rust application that allows users to get weather information for US a
 3. **Weather Information**:
    - View current conditions from the nearest weather station
    - See detailed forecast information
-   - Access Google Maps links for visualization
+   - Access external links for maps, flights, and real estate information
 
 ## Portability
 
@@ -38,6 +41,54 @@ Reather is designed to be portable and can run from any location:
   - If run from the project directory with a `data` folder, it will use `data/addresses.txt`
   - If run from any other location, it creates and uses `addresses.txt` in the same directory as the executable
 * **Built-in seed addresses**: Seed addresses are hardcoded into the application for ease of use
+
+## Installation
+
+### Pre-built Binary
+
+For convenience, a pre-built binary is included in this repository. You can download and use it directly without setting up a Rust development environment:
+
+1. **Download the binary**:
+   - Go to the [GitHub repository](https://github.com/yourusername/reather)
+   - Navigate to the `/target/release/` directory
+   - Download the `reather` executable
+
+2. **Make it executable** (on macOS/Linux):
+   ```bash
+   chmod +x path/to/reather
+   ```
+
+3. **Run the application**:
+   ```bash
+   ./reather
+   ```
+
+### Building from Source
+
+If you prefer to build the application yourself:
+
+1. **Install Rust** (if not already installed):
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+2. **Clone the repository**:
+   ```bash
+   git clone https://github.com/yourusername/reather.git
+   cd reather
+   ```
+
+3. **Build the release version**:
+   ```bash
+   cargo build --release
+   ```
+
+4. **Run the application**:
+   ```bash
+   ./target/release/reather
+   ```
+
+The release build will be optimized for performance and is recommended for regular usage.
 
 ## Development Container
 
