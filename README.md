@@ -1,60 +1,68 @@
-# Reather - a Rust-based Weather App
+# Reather - Rust CLI Weather, Airport, Real Estate, and Earthquake App
 
-Reather is a modern, portable CLI app for weather, airport, and real estate info in the USA. It features robust airport detection using the full OurAirports database, and provides rich external links for any address or weather station.
+Reather is a Rust-based command-line application that provides:
+- Robust airport search (with wildcard support)
+- Weather and forecast for addresses and airports
+- Real estate and external links for locations
+- USGS Earthquake data with filtering by magnitude and time
+- User-friendly address management (auto-geocoding, normalization)
 
 ## Features
 
-- **Fast, portable Rust CLI**
-- **Automatic airport detection**: Uses the full OurAirports CSV (downloaded at startup) to detect US airports by IATA or ICAO code, with no hardcoded lists
-- **Flightradar24, official airport, and Wikipedia links**: For any weather station at a US airport, shows Flightradar24, official airport website, and Wikipedia links in the external links submenu
-- **Google Maps and Zillow links**: For any address or station
-- **Zillow links for all US airports**: Always shows a Zillow real estate link for any airport in a US state (including military/heliport/remote fields), using robust geocoding and state abbreviation logic
-- **No warnings, robust and idiomatic Rust code**
-- **Portable data storage**: Uses `data/addresses.txt` if present, or creates `addresses.txt` in the executable directory
-- **Seed addresses**: Built-in for easy first use
+### Main Menu
+- Enter a new street address (auto-geocoded and normalized)
+- Choose from stored addresses
+- Airport search (wildcard, US/passenger filters)
+- Earthquakes (USGS, filter by magnitude and time)
+- Exit
+
+### Airport Search
+- Search by code, state, municipality, or name
+- Wildcard support: `Rome*`, `*Rome`, `*Rome*`, `Rome`
+- Filter for US states and/or passenger airports
+- Displays airport, weather, forecast, and external links
+
+### Address Management
+- `addresses.txt` stores addresses with lat/lon
+- Addresses without lat/lon are geocoded and normalized at startup
+- Normalization: stored as uppercase, matched address if lat/lon match
+- `addresses.txt` is ignored by git (user data is safe)
+
+### Earthquakes (USGS)
+- Menu for minimum magnitude: All, 5.0+, 6.0+, 7.0+
+- Menu for time period: 24 hours, 48 hours, 7 days
+- Results filtered by magnitude and time
+- Each earthquake shows:
+  - Magnitude, location, time
+  - Coordinates, depth
+  - Google Maps link
+  - USGS event link
 
 ## Usage
 
-```
-cargo run
-```
+1. Build and run:
+   ```sh
+   cargo build
+   cargo run
+   ```
+2. Follow the interactive menu prompts.
 
-On startup, you'll see:
+## Data Files
+- `data/addresses.txt`: User addresses (auto-managed, not tracked by git)
+- `data/airports.csv`: Airport database (auto-managed)
 
-```
-Reather - a Rust-based Weather App
-USA airport database loaded: <count> airports
+## Dependencies
+- Rust (2021 edition)
+- [reqwest](https://crates.io/crates/reqwest)
+- [serde](https://crates.io/crates/serde)
+- [tokio](https://crates.io/crates/tokio)
+- [chrono](https://crates.io/crates/chrono)
 
-Main Menu:
-1. Enter a new street address
-2. Choose from stored addresses
-3. Airport Search
-4. Exit
-```
+## Notes
+- User data in `addresses.txt` is never overwritten by git operations.
+- Earthquake data is fetched from [USGS GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php).
+- For best results, ensure you have an internet connection.
 
-When you select an address or airport, you'll get a submenu with options for current conditions, local forecast, and external links. If the nearest weather station is at a US airport, you'll see:
+---
 
-- Flightradar24 link
-- Official airport website (if available)
-- Wikipedia link (if available)
-- Zillow real estate link (for all US airports, including military/remote)
-
-## Data Sources
-- [OurAirports CSV](https://ourairports.com/data/)
-- [NOAA/NWS API](https://www.weather.gov/documentation/services-web-api)
-- [Google Maps](https://maps.google.com)
-- [Zillow](https://www.zillow.com)
-- [Flightradar24](https://www.flightradar24.com)
-
-## Portability
-
-- No data directory required: runs from any location
-- Adaptive storage: uses `data/addresses.txt` if present, otherwise creates `addresses.txt` in the executable directory
-- Built-in seed addresses for easy setup
-
-## Requirements
-- Rust (latest stable)
-- Internet connection (for weather, airport, and geocoding data)
-
-## License
-MIT
+MIT License

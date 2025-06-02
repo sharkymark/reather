@@ -246,6 +246,30 @@ struct ForecastPeriod {
     _wind_speed: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct EarthquakeFeatureCollection {
+    features: Vec<EarthquakeFeature>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EarthquakeFeature {
+    properties: EarthquakeProperties,
+    geometry: Option<EarthquakeGeometry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EarthquakeProperties {
+    mag: Option<f64>,
+    place: Option<String>,
+    time: Option<i64>,
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EarthquakeGeometry {
+    coordinates: Vec<f64>, // [lon, lat, depth]
+}
+
 async fn geocode_address(
     address_query: &str,
 ) -> Result<Option<(String, f64, f64)>, AppError> {
@@ -411,8 +435,9 @@ async fn async_main() -> Result<(), AppError> {
         println!("\nMain Menu:");
         println!("1. Enter a new street address");
         println!("2. Choose from stored addresses");
-        println!("3. Airport Search");
-        println!("4. Exit");
+        println!("3. Airport search");
+        println!("4. Earthquakes");
+        println!("5. Exit");
         print!("Please enter your choice: ");
         io::stdout().flush()?;
 
@@ -484,10 +509,13 @@ async fn async_main() -> Result<(), AppError> {
                 airport_search_menu().await?;
             }
             "4" => {
+                earthquake_menu().await?;
+            }
+            "5" => {
                 println!("Exiting Reather. Goodbye!");
                 break;
             }
-            _ => eprintln!("{}", AppError::UserInput("Invalid choice. Please enter 1, 2, 3, or 4.".to_string())),
+            _ => eprintln!("{}", AppError::UserInput("Invalid choice. Please enter 1, 2, 3, 4, or 5.".to_string())),
         }
     }
 
@@ -1150,4 +1178,119 @@ async fn get_city_state_from_latlon(lat: f64, lon: f64) -> Option<String> {
         Err(_) => {}
     }
     None
+}
+
+// --- Earthquake menu and logic ---
+
+async fn earthquake_menu() -> Result<(), AppError> {
+    use std::io::Write;
+    println!("\n--- Earthquakes ---");
+    println!("Select minimum magnitude:");
+    println!("1. All Earthquakes");
+    println!("2. M5.0+");
+    println!("3. M6.0+");
+    println!("4. M7.0+");
+    print!("Enter your choice (1-4, or Enter to return): ");
+    io::stdout().flush()?;
+    let mut mag_choice = String::new();
+    io::stdin().read_line(&mut mag_choice)?;
+    let mag_choice = mag_choice.trim();
+    if mag_choice.is_empty() { return Ok(()); }
+    let mag_val = match mag_choice {
+        "1" => 0.0,
+        "2" => 5.0,
+        "3" => 6.0,
+        "4" => 7.0,
+        _ => {
+            println!("Invalid choice.");
+            return Ok(());
+        }
+    };
+    println!("Select time period:");
+    println!("1. Past 24 hours");
+    println!("2. Past 48 hours");
+    println!("3. Past 7 days");
+    print!("Enter your choice (1-3, or Enter to return): ");
+    io::stdout().flush()?;
+    let mut time_choice = String::new();
+    io::stdin().read_line(&mut time_choice)?;
+    let time_choice = time_choice.trim();
+    if time_choice.is_empty() { return Ok(()); }
+    let (url, filter_hours) = match time_choice {
+        "1" => ("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson", 24),
+        "2" => ("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson", 48),
+        "3" => ("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_week.geojson", 168),
+        _ => {
+            println!("Invalid choice.");
+            return Ok(());
+        }
+    };
+    println!("\nFetching earthquake data from USGS...");
+    match fetch_and_display_earthquakes_filtered(url, mag_val, filter_hours).await {
+        Ok(_) => {},
+        Err(e) => eprintln!("Error fetching earthquake data: {}", e),
+    }
+    Ok(())
+}
+
+async fn fetch_and_display_earthquakes_filtered(url: &str, min_mag: f64, max_age_hours: u64) -> Result<(), AppError> {
+    let resp = HTTP_CLIENT.get(url).send().await?.error_for_status()?;
+    let data: EarthquakeFeatureCollection = resp.json().await?;
+    if data.features.is_empty() {
+        println!("No earthquakes found for this selection.");
+        return Ok(());
+    }
+    use chrono::{Utc, TimeZone};
+    let now = Utc::now();
+    let max_age = chrono::Duration::hours(max_age_hours as i64);
+    let mut shown = 0;
+    println!("\nRecent Earthquakes:");
+    for feature in data.features.iter() {
+        let mag = feature.properties.mag.unwrap_or(-999.0);
+        if mag < min_mag { continue; }
+        let time_ms = feature.properties.time.unwrap_or(0);
+        let event_time = chrono::Utc.timestamp_millis_opt(time_ms).single();
+        if let Some(event_time) = event_time {
+            if now.signed_duration_since(event_time) > max_age { continue; }
+        } else {
+            continue;
+        }
+        shown += 1;
+        let mag_str = if mag < 0.0 { "?".to_string() } else { format!("{:.1}", mag) };
+        let place = feature.properties.place.as_deref().unwrap_or("Unknown location");
+        let time = feature.properties.time.map(|t| format_utc_time(t)).unwrap_or("?".to_string());
+        let url = feature.properties.url.as_deref().unwrap_or("");
+        let (lat, lon, depth) = if let Some(geom) = &feature.geometry {
+            let coords = &geom.coordinates;
+            if coords.len() >= 3 {
+                (Some(coords[1]), Some(coords[0]), Some(coords[2]))
+            } else if coords.len() == 2 {
+                (Some(coords[1]), Some(coords[0]), None)
+            } else {
+                (None, None, None)
+            }
+        } else {
+            (None, None, None)
+        };
+        println!("{}. M{} | {} | {}", shown, mag_str, place, time);
+        if let (Some(lat), Some(lon)) = (lat, lon) {
+            println!("    Location: {:.3}, {:.3} | Depth: {} km", lat, lon, depth.map(|d| format!("{:.1}", d)).unwrap_or("?".to_string()));
+            println!("    Google Maps: https://www.google.com/maps?q={},{}&ll={},{}&z=7", lat, lon, lat, lon);
+        }
+        if !url.is_empty() {
+            println!("    More info: {}", url);
+        }
+    }
+    if shown == 0 {
+        println!("No earthquakes found for this selection.");
+    }
+    Ok(())
+}
+
+fn format_utc_time(ms_since_epoch: i64) -> String {
+    use std::time::{UNIX_EPOCH, Duration};
+    use chrono::{DateTime, Utc};
+    let dt = UNIX_EPOCH + Duration::from_millis(ms_since_epoch as u64);
+    let datetime: DateTime<Utc> = DateTime::<Utc>::from(dt);
+    datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
