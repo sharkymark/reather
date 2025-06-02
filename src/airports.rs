@@ -138,3 +138,33 @@ pub fn extract_zip_code(address_str: &str) -> Option<String> {
 pub fn generate_zillow_url(zip_code: &str) -> String {
     format!("https://www.zillow.com/homes/for_sale/{}", zip_code)
 }
+
+use std::collections::HashSet;
+
+pub fn search_airports(pattern: &str) -> Vec<&'static Airport> {
+    let pattern = pattern.trim().to_lowercase();
+    let airports = get_airports();
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+    let pat = pattern.as_str();
+    for airport in airports.values() {
+        let code = airport.ident.to_lowercase();
+        let state = airport.iso_region.to_lowercase();
+        let muni = airport.municipality.to_lowercase();
+        let name = airport.name.to_lowercase();
+        let iata = airport.iata_code.to_lowercase();
+        if code.contains(pat) || iata.contains(pat) || state.contains(pat) || muni.contains(pat) || name.contains(pat) {
+            // Avoid duplicates (airports can be in map by both ident and iata)
+            if seen.insert(airport.ident.clone()) {
+                results.push(airport);
+            }
+        }
+    }
+    // Sort by region (state), then municipality, then name
+    results.sort_by(|a, b| {
+        a.iso_region.cmp(&b.iso_region)
+            .then_with(|| a.municipality.cmp(&b.municipality))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    results
+}
