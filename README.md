@@ -5,7 +5,7 @@ Reather is a Rust-based command-line application that provides:
 - Weather and forecast for addresses and airports
 - Real estate and external links for locations
 - USGS Earthquake data with filtering by magnitude and time
-- NOAA Tides predictions for any address or airport
+- NOAA Tides predictions for any address or airport station
 - User-friendly address management (auto-geocoding, normalization)
 
 ## Features

@@ -1329,7 +1329,15 @@ async fn tides_menu() -> Result<(), AppError> {
 }
 
 async fn tides_by_address() -> Result<(), AppError> {
-    let addresses = load_addresses(Path::new(DATA_DIR).join(ADDRESS_FILE).as_path())?;
+    // Use the same address file path logic as async_main
+    let data_dir_path = PathBuf::from(DATA_DIR);
+    let addresses_path = if data_dir_path.exists() {
+        data_dir_path.join(ADDRESS_FILE)
+    } else {
+        // Fallback: use current directory (where binary is run)
+        PathBuf::from(ADDRESS_FILE)
+    };
+    let addresses = load_addresses(&addresses_path)?;
     if addresses.is_empty() {
         println!("No stored addresses found. Please add an address first.");
         return Ok(());
