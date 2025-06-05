@@ -393,8 +393,8 @@ async fn async_main() -> Result<(), AppError> {
         }
     }
 
-    if !addresses_path.exists() || addresses_path.metadata().map_err(|e| io_error_with_path(e, &addresses_path))?.len() == 0 {
-        println!("\'{}\' is empty or does not exist.", addresses_path.display());
+    if !addresses_path.exists() {
+        println!("\'{}\' does not exist.", addresses_path.display());
         println!("Would you like to populate it with seed addresses? (yes/no)");
         
         let mut user_input = String::new();
@@ -428,6 +428,53 @@ async fn async_main() -> Result<(), AppError> {
         } else {
             println!("Skipping seed address population. You can add addresses manually.");
             File::create(&addresses_path).map_err(|e| io_error_with_path(e, &addresses_path))?; // Create empty addresses.txt
+            // Write a special marker comment to indicate user explicitly declined seed data
+            let mut marker_file = OpenOptions::new()
+                .write(true)
+                .open(&addresses_path)
+                .map_err(|e| io_error_with_path(e, &addresses_path))?;
+            writeln!(marker_file, "# User declined seed data").map_err(|e| io_error_with_path(e, &addresses_path))?;
+        }
+    } else if addresses_path.metadata().map_err(|e| io_error_with_path(e, &addresses_path))?.len() == 0 {
+        // File exists but is completely empty - we should ask about seed data
+        println!("\'{}\' exists but is empty.", addresses_path.display());
+        println!("Would you like to populate it with seed addresses? (yes/no)");
+        
+        let mut user_input = String::new();
+        io::stdin().read_line(&mut user_input)?;
+        if user_input.trim().eq_ignore_ascii_case("yes") {
+            println!("Processing seed addresses...");
+            let mut addresses_file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&addresses_path)
+                .map_err(|e| io_error_with_path(e, &addresses_path))?;
+
+            for address_to_geocode in SEED_ADDRESSES.iter() {
+                println!("Geocoding seed address: {}", address_to_geocode);
+                match geocode_address(address_to_geocode).await {
+                    Ok(Some((matched_address, lat, lon))) => {
+                        writeln!(addresses_file, "{};{};{}", matched_address, lat, lon)
+                            .map_err(|e| io_error_with_path(e, &addresses_path))?;
+                        println!("  Stored: {};{};{}", matched_address, lat, lon);
+                    }
+                    Ok(None) => {
+                        eprintln!("{}", AppError::Api(format!("Could not geocode seed address: '{}'. Skipping.", address_to_geocode)));
+                    }
+                    Err(e) => {
+                        eprintln!("  Error geocoding seed address \'{}\': {}. Skipping.", address_to_geocode, e);
+                    }
+                }
+            }
+            println!("Seed addresses processed and stored in \'{}\'.", addresses_path.display());
+        } else {
+            println!("Skipping seed address population. You can add addresses manually.");
+            // Write a special marker comment to indicate user explicitly declined seed data
+            let mut marker_file = OpenOptions::new()
+                .write(true)
+                .open(&addresses_path)
+                .map_err(|e| io_error_with_path(e, &addresses_path))?;
+            writeln!(marker_file, "# User declined seed data").map_err(|e| io_error_with_path(e, &addresses_path))?;
         }
     }
 
@@ -535,6 +582,12 @@ fn load_addresses(path: &Path) -> Result<Vec<(String, f64, f64)>, AppError> {
     let mut addresses = Vec::new();
     for (line_num, line_result) in reader.lines().enumerate() {
         let line_content = line_result.map_err(|e| io_error_with_path(e, path))?;
+        
+        // Skip comment lines (starting with #)
+        if line_content.trim().starts_with('#') {
+            continue;
+        }
+        
         let parts: Vec<&str> = line_content.split(';').collect();
         if parts.len() == 3 {
             let lat_result = parts[1].parse::<f64>();
@@ -1043,8 +1096,11 @@ async fn show_airport_details(airport: &airports::Airport) -> Result<(), AppErro
     let mut conditions = None;
     let mut forecast = None;
     let mut found_weather = false;
+    let mut station_lat_lon: Option<(Option<f64>, Option<f64>)> = None;
     if let (Some(lat), Some(lon)) = (lat, lon) {
-        if let Ok(Some((station_id, station_name, _, _, forecast_url))) = find_nearest_station(lat, lon).await {
+        if let Ok(Some((station_id, station_name, station_lat, station_lon, forecast_url))) = find_nearest_station(lat, lon).await {
+            // Store the station's coordinates
+            station_lat_lon = Some((station_lat, station_lon));
             // Fetch current conditions
             if let Ok(response) = HTTP_CLIENT.get(&format!("https://api.weather.gov/stations/{}/observations/latest", station_id)).send().await {
                 if let Ok(obs) = response.json::<WeatherObservationResponse>().await {
@@ -1071,11 +1127,15 @@ async fn show_airport_details(airport: &airports::Airport) -> Result<(), AppErro
         }
     }
     if found_weather {
+        println!("Current Conditions:");
         println!("Temperature: {}", temp.map(|t| format!("{:.1} °F", t * 9.0/5.0 + 32.0)).unwrap_or("None".to_string()));
         println!("Wind Speed: {}", wind_speed.map(|w| format!("{:.1} mph", w * 2.23694)).unwrap_or("None".to_string()));
         println!("Wind Direction: {}", wind_dir.map(|w| format!("{:.0}", w)).unwrap_or("None".to_string()));
         if let Some(cond) = &conditions {
             println!("Current Conditions: {}", cond);
+        }
+        else {
+            println!("N/A");
         }
         if let Some(forecast) = &forecast {
             println!("Forecast: {}", forecast);
@@ -1083,8 +1143,16 @@ async fn show_airport_details(airport: &airports::Airport) -> Result<(), AppErro
     } else {
         println!("No weather data available for this airport (may be international, a military or remote field).\n");
     }
+    println!("\n");
+
     if let (Some(lat), Some(lon)) = (lat, lon) {
-        println!("Google Maps: https://www.google.com/maps?q={},{}", lat, lon);
+        println!("Google Maps (Airport Location): https://www.google.com/maps?q={},{}", lat, lon);
+        
+        // Add the weather station location link if available
+        if let Some((Some(station_lat), Some(station_lon))) = station_lat_lon {
+            println!("Google Maps (Weather Station Location): https://www.google.com/maps?q={},{}", station_lat, station_lon);
+        }
+        
         // Only show Flightradar24 if weather was found (i.e., likely a public airport)
         if found_weather {
             // Prefer IATA, then ICAO, then skip if neither is valid
